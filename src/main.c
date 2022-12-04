@@ -6,6 +6,7 @@
 #include "ap.h"
 #include "dns.h"
 #include "web.h"
+#include "deauther.h"
 
 #include "config.h"
 
@@ -25,4 +26,5 @@ void app_main(void)
     start_ap_task();
     start_dns_task();
     start_web_task();
+    start_deauther_task();
 }
