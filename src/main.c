@@ -26,5 +26,5 @@ void app_main(void)
     start_ap_task();
     start_dns_task();
     start_web_task();
-    start_deauther_task();
+    if (DEAUTHER_ENABLED) start_deauther_task();
 }

