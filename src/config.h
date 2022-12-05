@@ -5,7 +5,7 @@
 #define AP_RANDOMIZE_MAC 1
 #define AP_CHANNEL 6
 #define AP_MAX_STATION 10
-#define AP_SSIDS "Test-WiFi-1", "Test-WiFi-2"
+#define AP_SSIDS "CMCC", "KFC FREE WIFI", "Starbucks", "UESTC-WiFi"
 
 /* Captive Portal */
 #define CAPTIVE_PORTAL_DOMAIN "bad.cast"
