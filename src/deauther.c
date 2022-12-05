@@ -76,11 +76,6 @@ void send_deauth_frame(wifi_ap_record_t *target)
 void deauth(void *arg)
 {
     while (1) {
-        // save AP channel
-        uint8_t chPrimary;
-        wifi_second_chan_t chSecond;
-        ESP_ERROR_CHECK(esp_wifi_get_channel(&chPrimary, &chSecond));
-
         // scan for nearby APs
         ESP_ERROR_CHECK(esp_wifi_scan_start(&scanConfig, true));
         uint16_t apCount = 0;
@@ -88,8 +83,17 @@ void deauth(void *arg)
         ESP_LOGI(TAG, "found %u APs", apCount);
 
         if (apCount > 0) {
+            // save AP channel
+            uint8_t chPrimary;
+            wifi_second_chan_t chSecond;
+            ESP_ERROR_CHECK(esp_wifi_get_channel(&chPrimary, &chSecond));
+            
             ESP_LOGD(TAG, "free heap: %u", esp_get_free_heap_size());
             wifi_ap_record_t *apList = malloc(apCount * sizeof(wifi_ap_record_t));
+            if (!apList) {
+                ESP_LOGE(TAG, "failed to allocate memory for ap list");
+                goto end;
+            }
             ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&apCount, apList));
             ESP_LOGD(TAG, "free heap: %u", esp_get_free_heap_size());
 
@@ -100,11 +104,12 @@ void deauth(void *arg)
                 send_deauth_frame(&apList[i]);
             }
             free(apList);
+
+            // restore AP channel
+            ESP_ERROR_CHECK(esp_wifi_set_channel(chPrimary, chSecond));
         }
 
-        // restore AP channel
-        ESP_ERROR_CHECK(esp_wifi_set_channel(chPrimary, chSecond));
-
+        end:
         ESP_LOGD(TAG, "free heap: %u", esp_get_free_heap_size());
         vTaskDelay(20000 / portTICK_PERIOD_MS);
     }
